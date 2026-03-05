@@ -1,0 +1,6 @@
+fastapi
+openai
+python-dotenv
+python-multipart
+uvicorn
+a2wsgi
