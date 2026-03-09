@@ -8,7 +8,8 @@
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "main.py"
+      "destination": "mandee_ai_backend.py"
     }
   ]
+
 }
