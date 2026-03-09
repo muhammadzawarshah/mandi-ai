@@ -8,26 +8,50 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from dotenv import load_dotenv
-import uvicorn
 
 # ================================================================
-#  MANDEE AI — v3.1 FIXED EDITION
+#  MANDEE AI — v3.2 VERCEL EDITION
 #
-#  Fixes in v3.1:
-#    ✅ FFmpeg Windows auto-detect (WinError 2 fixed)
-#    ✅ Gemini 3.1 Pro JSON parse fixed (no response_format)
-#    ✅ Much stronger Urdu prompt — galat likhna band
-#    ✅ Faster pipeline — Gemini Flash as PRIMARY (fastest)
-#    ✅ Better number + fraction handling
+#  Changes in v3.2:
+#    ✅ Vercel environment auto-detect
+#    ✅ DEBUG_DIR → /tmp on Vercel (writable)
+#    ✅ FFmpeg + preprocessing skipped on Vercel
+#    ✅ Debug file writes skipped on Vercel (optional /tmp)
+#    ✅ os.path.abspath(__file__) crash fixed for Vercel
+#    ✅ uvicorn import removed (not needed on Vercel)
 #
 #  LLM ORDER (speed + accuracy balanced):
 #    TIER 1: google/gemini-2.5-flash        ← Fastest, very good Urdu
-#    TIER 2: anthropic/claude-opus-4.6      ← Best accuracy fallback
-#    TIER 3: google/gemini-3.1-pro-preview  ← Last resort
+#    TIER 2: anthropic/claude-opus-4-5      ← Best accuracy fallback
+#    TIER 3: google/gemini-2.5-pro-preview  ← Last resort
 # ================================================================
 
 load_dotenv()
 
+# ================================================================
+# ENVIRONMENT DETECTION
+# ================================================================
+IS_VERCEL = os.environ.get("VERCEL") == "1" or "VERCEL_ENV" in os.environ
+
+# ================================================================
+# DEBUG AUDIO FOLDER
+# Vercel par /tmp use hota hai (read-write), local par debug_audio/
+# ================================================================
+if IS_VERCEL:
+    DEBUG_DIR = "/tmp"
+else:
+    try:
+        _base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        _base = os.getcwd()
+    DEBUG_DIR = os.path.join(_base, "debug_audio")
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    print(f"📁 Debug audio folder: {DEBUG_DIR}")
+
+
+# ================================================================
+# CLIENTS
+# ================================================================
 whisper_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 openrouter_client = OpenAI(
@@ -35,7 +59,7 @@ openrouter_client = OpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY"),
 )
 
-app = FastAPI(title="Mandee AI v3.1")
+app = FastAPI(title="Mandee AI v3.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,20 +69,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ================================================================
 # FFMPEG — Windows + Linux/Mac auto-detect
+# Vercel par skip kiya jata hai
 # ================================================================
 def find_ffmpeg() -> str | None:
-    """
-    FFmpeg binary dhundo — Windows aur Linux dono pe kaam kare.
-    Common Windows install locations check karta hai.
-    """
-    # 1. PATH mein check karo (sab se pehle)
+    if IS_VERCEL:
+        return None  # Vercel par FFmpeg available nahi hota
+
     found = shutil.which("ffmpeg")
     if found:
         return found
 
-    # 2. Windows common locations
     win_paths = [
         r"C:\ffmpeg\bin\ffmpeg.exe",
         r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
@@ -70,39 +93,27 @@ def find_ffmpeg() -> str | None:
         if os.path.isfile(p):
             return p
 
-    return None  # FFmpeg nahi mila — skip preprocessing
+    return None
+
 
 FFMPEG_PATH = find_ffmpeg()
-if FFMPEG_PATH:
-    print(f"✅ FFmpeg found: {FFMPEG_PATH}")
-else:
-    print("⚠️  FFmpeg not found — audio preprocessing disabled (install ffmpeg and add to PATH)")
-
-# ================================================================
-# DEBUG AUDIO FOLDER
-# Har audio yahan save hogi taake hum sun sakein kya aa raha hai
-# Folder: debug_audio/ (backend.py ke saath wali directory mein)
-# ================================================================
-DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_audio")
-os.makedirs(DEBUG_DIR, exist_ok=True)
-print(f"📁 Debug audio folder: {DEBUG_DIR}")
+if not IS_VERCEL:
+    if FFMPEG_PATH:
+        print(f"✅ FFmpeg found: {FFMPEG_PATH}")
+    else:
+        print("⚠️  FFmpeg not found — audio preprocessing disabled (install ffmpeg and add to PATH)")
 
 
 def preprocess_audio(input_path: str) -> str:
     """
-    FFmpeg se mandi audio clean karo:
-      - highpass=f=80   → pankhe/fan ki bass remove
-      - lowpass=f=8000  → high freq hiss remove
-      - loudnorm        → volume normalize
-      - 16kHz mono WAV  → Whisper ka optimal format
-
-    Agar FFmpeg nahi mila → original file return karo (no crash)
+    FFmpeg se audio clean karo.
+    Vercel par ya agar FFmpeg nahi mila → original file return karo (no crash).
     """
-    if not FFMPEG_PATH:
-        return input_path  # FFmpeg nahi — silently skip
+    if not FFMPEG_PATH or IS_VERCEL:
+        return input_path  # Skip on Vercel or when FFmpeg missing
 
-    base   = os.path.splitext(input_path)[0]
-    out    = base + "_clean.wav"
+    base = os.path.splitext(input_path)[0]
+    out  = base + "_clean.wav"
 
     cmd = [
         FFMPEG_PATH, "-y",
@@ -119,7 +130,7 @@ def preprocess_audio(input_path: str) -> str:
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=10)
         if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 500:
-            print(f"✅ FFmpeg cleaned: {os.path.getsize(out)//1024}KB")
+            print(f"✅ FFmpeg cleaned: {os.path.getsize(out) // 1024}KB")
             return out
         print(f"⚠️  FFmpeg failed rc={r.returncode}")
     except subprocess.TimeoutExpired:
@@ -131,8 +142,7 @@ def preprocess_audio(input_path: str) -> str:
 
 
 # ================================================================
-# WHISPER PROMPT — Mandi vocabulary hint
-# Yahan jitne zyada mandi words, utna accurate transcription
+# WHISPER PROMPT
 # ================================================================
 WHISPER_PROMPT = (
     "پاکستانی منڈی میں سبزیوں کی خریداری کا بیان: "
@@ -144,24 +154,19 @@ WHISPER_PROMPT = (
     "روپے فی کلو فی من بھاؤ قیمت"
 )
 
-
 # ================================================================
-# PHONETIC CORRECTIONS — Whisper ki aaam galtiyan
+# PHONETIC CORRECTIONS
 # ================================================================
 PHONETIC_CORRECTIONS = {
-    # Wazan
     r'\bمنہ\b': 'من',       r'\bمنوں\b': 'من',
     r'\bکلہ\b': 'کلو',      r'\bکلو گرام\b': 'کلو',
     r'\bدھڑیاں\b': 'دھڑی',
     r'\bپاو\b': 'پاؤ',      r'\bپاوا\b': 'پاؤ',
     r'\bسیرا\b': 'سیر',
-    # Fractions
     r'\bدھائی\b': 'اڑھائی', r'\bڈیڑ\b': 'ڈیڑھ',
     r'\bادھا\b': 'آدھا',    r'\bاردھا\b': 'آدھا',
-    # Names
     r'\bالی\b': 'علی',       r'\bعلے\b': 'علی',
     r'\bزوارہ\b': 'زوار',   r'\bزوارا\b': 'زوار',
-    # Sabziyaan
     r'\bٹماٹرز\b': 'ٹماٹر',
     r'\bپیاذ\b': 'پیاز',    r'\bپیازا\b': 'پیاز',
     r'\bگوبی\b': 'گوبھی',
@@ -175,13 +180,7 @@ def apply_phonetic_corrections(text: str) -> str:
 
 
 # ================================================================
-# LLM SYSTEM PROMPT — v3.1 Strongest version
-#
-# Key improvements:
-#  - Roman Urdu → Urdu script conversion explicitly mentioned
-#  - More fraction examples
-#  - Strict JSON instruction at top AND bottom
-#  - No response_format dependency (manual JSON parse)
+# LLM SYSTEM PROMPT
 # ================================================================
 MANDI_SYSTEM_PROMPT = """You are a Pakistani mandi (wholesale vegetable market) billing expert. Your ONLY job is to convert speech transcription into clean Urdu billing text.
 
@@ -254,7 +253,6 @@ EXAMPLES (study these carefully):
 RESPOND ONLY WITH JSON: {"corrected_text": "..."}
 No explanation. No extra text. Just the JSON."""
 
-
 OR_HEADERS = {
     "HTTP-Referer": "https://mandee.ai",
     "X-Title": "Mandee AI"
@@ -262,26 +260,18 @@ OR_HEADERS = {
 
 
 def extract_json_safe(raw: str, fallback: str) -> str:
-    """
-    LLM response se JSON extract karo — safely.
-    Kuch models extra text ya markdown likhte hain JSON ke saath.
-    """
     if not raw:
         return fallback
 
-    # Try direct parse
     try:
         return json.loads(raw).get("corrected_text", fallback)
     except Exception:
         pass
 
-    # JSON block dhundo andar text mein
     match = re.search(r'\{[^{}]*"corrected_text"\s*:\s*"([^"]+)"[^{}]*\}', raw, re.DOTALL)
     if match:
         return match.group(1)
 
-    # Sirf text extract karo agar JSON nahi mila
-    # Markdown fence hatao
     cleaned = re.sub(r'```[a-z]*\n?', '', raw).strip()
     try:
         return json.loads(cleaned).get("corrected_text", fallback)
@@ -292,11 +282,7 @@ def extract_json_safe(raw: str, fallback: str) -> str:
 
 
 def call_llm(model: str, text: str) -> str:
-    """
-    LLM call — response_format sirf Claude ke saath use karo.
-    Gemini models ke liye manual JSON parse.
-    """
-    use_json_format = "anthropic/" in model  # Only Claude supports it reliably
+    use_json_format = "anthropic/" in model
 
     kwargs = dict(
         model=model,
@@ -318,20 +304,12 @@ def call_llm(model: str, text: str) -> str:
 
 
 def process_text_with_llm(raw_urdu: str) -> dict:
-    """
-    LLM cascade — speed ke liye Flash first, accuracy ke liye Opus fallback.
-
-    Order changed in v3.1:
-      TIER 1: gemini-2.5-flash        ← Fastest (< 1s usually)
-      TIER 2: claude-opus-4.6         ← Best accuracy
-      TIER 3: gemini-3.1-pro-preview  ← Last resort
-    """
     cleaned = apply_phonetic_corrections(raw_urdu)
 
     tiers = [
-        ("google/gemini-2.5-flash",        "TIER1 Flash (fast)"),
-        ("anthropic/claude-opus-4.6",      "TIER2 Opus (accurate)"),
-        ("google/gemini-3.1-pro-preview",  "TIER3 Gemini Pro"),
+        ("google/gemini-2.5-flash",       "TIER1 Flash (fast)"),
+        ("anthropic/claude-opus-4-5",     "TIER2 Opus (accurate)"),
+        ("google/gemini-2.5-pro-preview", "TIER3 Gemini Pro"),
     ]
 
     for model_id, label in tiers:
@@ -339,8 +317,8 @@ def process_text_with_llm(raw_urdu: str) -> dict:
             result = call_llm(model_id, cleaned)
             print(f"✅ {label} succeeded")
             return {
-                "corrected_text":  result,
-                "model_used":      model_id,
+                "corrected_text":   result,
+                "model_used":       model_id,
                 "phonetic_cleaned": cleaned
             }
         except Exception as e:
@@ -348,10 +326,25 @@ def process_text_with_llm(raw_urdu: str) -> dict:
 
     print("❌ All LLMs failed")
     return {
-        "corrected_text":  cleaned,
-        "model_used":      "phonetic_only",
+        "corrected_text":   cleaned,
+        "model_used":       "phonetic_only",
         "phonetic_cleaned": cleaned
     }
+
+
+# ================================================================
+# HELPER: safe debug file write (no crash on Vercel /tmp issues)
+# ================================================================
+def _safe_write(path: str, content: bytes | str) -> bool:
+    try:
+        mode = "wb" if isinstance(content, bytes) else "w"
+        kwargs = {} if isinstance(content, bytes) else {"encoding": "utf-8"}
+        with open(path, mode, **kwargs) as f:
+            f.write(content)
+        return True
+    except Exception as e:
+        print(f"⚠️  Debug write failed ({path}): {e}")
+        return False
 
 
 # ================================================================
@@ -361,12 +354,12 @@ def process_text_with_llm(raw_urdu: str) -> dict:
 @app.post("/process-audio")
 async def process_audio(file: UploadFile = File(...)):
     start_time = time.time()
-    ts       = int(time.time() * 1000)
-    ext      = os.path.splitext(file.filename or "audio.webm")[1] or ".webm"
+    ts  = int(time.time() * 1000)
+    ext = os.path.splitext(file.filename or "audio.webm")[1] or ".webm"
 
-    # Windows safe temp path
-    tmp_dir  = os.environ.get("TEMP", "/tmp")
-    raw_path = os.path.join(tmp_dir, f"mandee_raw_{ts}{ext}")
+    # Always use /tmp — safe on both Vercel and local
+    tmp_dir    = "/tmp" if IS_VERCEL else os.environ.get("TEMP", "/tmp")
+    raw_path   = os.path.join(tmp_dir, f"mandee_raw_{ts}{ext}")
     clean_path = None
 
     try:
@@ -379,25 +372,22 @@ async def process_audio(file: UploadFile = File(...)):
         if file_size < 500:
             return {"status": "error", "message": "Audio too small — kuch bola nahi"}
 
-        # ── DEBUG: raw audio save karo ──────────────────────────
-        debug_raw = os.path.join(DEBUG_DIR, f"{ts}_1_RAW{ext}")
-        with open(debug_raw, "wb") as f:
-            f.write(audio_bytes)
-        print(f"💾 Saved raw:   {debug_raw}  ({file_size//1024}KB)")
-        # ────────────────────────────────────────────────────────
+        # DEBUG: raw audio save (local only)
+        if not IS_VERCEL:
+            debug_raw = os.path.join(DEBUG_DIR, f"{ts}_1_RAW{ext}")
+            _safe_write(debug_raw, audio_bytes)
+            print(f"💾 Saved raw:   {debug_raw}  ({file_size // 1024}KB)")
 
-        # 2. FFmpeg clean
+        # 2. FFmpeg clean (skipped on Vercel)
         preprocessed = preprocess_audio(raw_path)
         if preprocessed != raw_path:
             clean_path = preprocessed
-            # ── DEBUG: cleaned audio bhi save karo ──────────────
-            debug_clean = os.path.join(DEBUG_DIR, f"{ts}_2_CLEAN.wav")
-            import shutil as _sh
-            _sh.copy2(preprocessed, debug_clean)
-            print(f"💾 Saved clean: {debug_clean}")
-            # ────────────────────────────────────────────────────
+            if not IS_VERCEL:
+                debug_clean = os.path.join(DEBUG_DIR, f"{ts}_2_CLEAN.wav")
+                shutil.copy2(preprocessed, debug_clean)
+                print(f"💾 Saved clean: {debug_clean}")
 
-        # 3. Whisper
+        # 3. Whisper transcription
         with open(preprocessed, "rb") as af:
             transcription = whisper_client.audio.transcriptions.create(
                 model="whisper-1",
@@ -420,22 +410,25 @@ async def process_audio(file: UploadFile = File(...)):
         # 4. LLM cascade
         llm_result = process_text_with_llm(urdu_raw)
 
-        # ── DEBUG: transcript + result log file ─────────────────
-        log_path = os.path.join(DEBUG_DIR, f"{ts}_3_LOG.txt")
-        with open(log_path, "w", encoding="utf-8") as lf:
-            lf.write(f"=== MANDEE AI DEBUG LOG ===\n")
-            lf.write(f"Time       : {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            lf.write(f"Audio size : {file_size} bytes\n")
-            lf.write(f"FFmpeg     : {'ON' if FFMPEG_PATH else 'OFF'}\n")
-            lf.write(f"\n--- WHISPER OUTPUT (RAW) ---\n{urdu_raw}\n")
-            lf.write(f"\n--- PHONETIC CLEANED ---\n{llm_result['phonetic_cleaned']}\n")
-            lf.write(f"\n--- FINAL LLM OUTPUT ---\n{llm_result['corrected_text']}\n")
-            lf.write(f"\n--- MODEL USED ---\n{llm_result['model_used']}\n")
-            lf.write(f"\nLatency: {time.time() - start_time:.2f}s\n")
-        print(f"💾 Saved log:   {log_path}")
+        # DEBUG: log file (local only — Vercel pe console logs hi kaafi hain)
+        if not IS_VERCEL:
+            log_path = os.path.join(DEBUG_DIR, f"{ts}_3_LOG.txt")
+            log_content = (
+                f"=== MANDEE AI DEBUG LOG ===\n"
+                f"Time       : {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Audio size : {file_size} bytes\n"
+                f"FFmpeg     : {'ON' if FFMPEG_PATH else 'OFF'}\n"
+                f"\n--- WHISPER OUTPUT (RAW) ---\n{urdu_raw}\n"
+                f"\n--- PHONETIC CLEANED ---\n{llm_result['phonetic_cleaned']}\n"
+                f"\n--- FINAL LLM OUTPUT ---\n{llm_result['corrected_text']}\n"
+                f"\n--- MODEL USED ---\n{llm_result['model_used']}\n"
+                f"\nLatency: {time.time() - start_time:.2f}s\n"
+            )
+            _safe_write(log_path, log_content)
+            print(f"💾 Saved log:   {log_path}")
+
         print(f"📝 Whisper said: '{urdu_raw}'")
         print(f"✅ Final output: '{llm_result['corrected_text']}'")
-        # ────────────────────────────────────────────────────────
 
         return {
             "status":           "success",
@@ -444,7 +437,6 @@ async def process_audio(file: UploadFile = File(...)):
             "phonetic_cleaned": llm_result["phonetic_cleaned"],
             "model_used":       llm_result["model_used"],
             "ffmpeg_active":    FFMPEG_PATH is not None,
-            "debug_log":        log_path,
             "latency":          f"{time.time() - start_time:.2f}s"
         }
 
@@ -453,8 +445,10 @@ async def process_audio(file: UploadFile = File(...)):
     finally:
         for path in [raw_path, clean_path]:
             if path and os.path.exists(path):
-                try: os.remove(path)
-                except: pass
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
 
 @app.post("/process-text")
@@ -476,13 +470,18 @@ async def process_text(data: dict):
 @app.get("/debug")
 async def debug_list():
     """
-    debug_audio folder mein saved files aur logs dikhao.
-    Browser mein kholo: http://localhost:8000/debug
+    Local only: debug_audio folder mein saved files aur logs dikhao.
+    Vercel par sirf basic info return hoti hai.
     """
+    if IS_VERCEL:
+        return {
+            "message": "Debug file logging is disabled on Vercel. Check your deployment logs instead.",
+            "vercel": True
+        }
+
     if not os.path.exists(DEBUG_DIR):
         return {"debug_dir": DEBUG_DIR, "sessions": []}
 
-    # Saari log files padhte hain
     sessions = {}
     for fname in sorted(os.listdir(DEBUG_DIR)):
         ts_part = fname.split("_")[0]
@@ -498,7 +497,7 @@ async def debug_list():
                 pass
 
     result = []
-    for ts_key, data in sorted(sessions.items(), reverse=True)[:20]:  # last 20
+    for ts_key, data in sorted(sessions.items(), reverse=True)[:20]:
         result.append({
             "session_id": ts_key,
             "files": data["files"],
@@ -514,7 +513,10 @@ async def debug_list():
 
 @app.delete("/debug/clear")
 async def debug_clear():
-    """debug_audio folder khali karo"""
+    """debug_audio folder khali karo (local only)"""
+    if IS_VERCEL:
+        return {"message": "Not applicable on Vercel."}
+
     count = 0
     for fname in os.listdir(DEBUG_DIR):
         try:
@@ -529,24 +531,28 @@ async def debug_clear():
 async def health():
     return {
         "status":        "online ✅",
-        "version":       "v3.1 Fixed",
-        "ffmpeg":        FFMPEG_PATH or "NOT INSTALLED (install ffmpeg + add to PATH)",
-        "llm_tier1":     "google/gemini-2.5-flash     — fast primary",
-        "llm_tier2":     "anthropic/claude-opus-4.6   — accurate fallback",
-        "llm_tier3":     "google/gemini-3.1-pro-preview — last resort",
-        "fixes_v3.1": [
-            "FFmpeg Windows auto-detect fixed",
-            "Gemini JSON parse fixed (no response_format)",
-            "Roman Urdu → Urdu script explicit in prompt",
-            "Faster: Flash first, Opus fallback",
+        "version":       "v3.2 Vercel Edition",
+        "environment":   "vercel" if IS_VERCEL else "local",
+        "ffmpeg":        FFMPEG_PATH or ("N/A on Vercel" if IS_VERCEL else "NOT INSTALLED (install ffmpeg + add to PATH)"),
+        "llm_tier1":     "google/gemini-2.5-flash      — fast primary",
+        "llm_tier2":     "anthropic/claude-opus-4-5    — accurate fallback",
+        "llm_tier3":     "google/gemini-2.5-pro-preview — last resort",
+        "fixes_v3.2": [
+            "Vercel environment auto-detect (IS_VERCEL flag)",
+            "DEBUG_DIR → /tmp on Vercel",
+            "FFmpeg + preprocessing skipped on Vercel",
+            "Debug file writes skipped on Vercel (no disk writes)",
+            "os.path.abspath(__file__) NameError fixed",
+            "uvicorn import removed (not needed on Vercel)",
+            "tmp_dir always /tmp on Vercel",
         ]
     }
 
 
 @app.get("/")
 async def root():
-    return {"app": "Mandee AI v3.1", "endpoints": ["/process-audio", "/process-text", "/health"]}
-
-
-
-
+    return {
+        "app": "Mandee AI v3.2",
+        "environment": "vercel" if IS_VERCEL else "local",
+        "endpoints": ["/process-audio", "/process-text", "/health", "/debug"]
+    }
