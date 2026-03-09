@@ -1,7 +1,8 @@
 {
+  "version": 2,
   "builds": [
     {
-      "src": "main.py",
+      "src": "mandee_ai_backend.py",
       "use": "@vercel/python"
     }
   ],
@@ -11,5 +12,4 @@
       "destination": "mandee_ai_backend.py"
     }
   ]
-
 }
