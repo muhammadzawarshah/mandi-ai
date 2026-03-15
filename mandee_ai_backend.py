@@ -83,7 +83,7 @@ else:
 # Har audio yahan save hogi taake hum sun sakein kya aa raha hai
 # Folder: debug_audio/ (backend.py ke saath wali directory mein)
 # ================================================================
-DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_audio")
+DEBUG_DIR = "/tmp/debug_audio"
 os.makedirs(DEBUG_DIR, exist_ok=True)
 print(f"📁 Debug audio folder: {DEBUG_DIR}")
 
