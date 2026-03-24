@@ -95,45 +95,9 @@ print(f"📁 Debug audio folder: {DEBUG_DIR}")
 
 
 def preprocess_audio(input_path: str) -> str:
-    """
-    FFmpeg se mandi audio clean karo:
-      - highpass=f=80   → pankhe/fan ki bass remove
-      - lowpass=f=8000  → high freq hiss remove
-      - loudnorm        → volume normalize
-      - 16kHz mono WAV  → Whisper ka optimal format
-
-    Agar FFmpeg nahi mila → original file return karo (no crash)
-    """
-    if not FFMPEG_PATH:
-        return input_path  # FFmpeg nahi — silently skip
-
-    base   = os.path.splitext(input_path)[0]
-    out    = base + "_clean.wav"
-
-    cmd = [
-        FFMPEG_PATH, "-y",
-        "-i", input_path,
-        "-af",
-        "highpass=f=100,lowpass=f=7500,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11",
-        "-ar", "16000",
-        "-ac", "1",
-        "-c:a", "pcm_s16le",
-        out,
-        "-loglevel", "error"
-    ]
-
-    try:
-        r = subprocess.run(cmd, capture_output=True, timeout=10)
-        if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 500:
-            print(f"✅ FFmpeg cleaned: {os.path.getsize(out)//1024}KB")
-            return out
-        print(f"⚠️  FFmpeg failed rc={r.returncode}")
-    except subprocess.TimeoutExpired:
-        print("⚠️  FFmpeg timeout — using original")
-    except Exception as e:
-        print(f"⚠️  FFmpeg error: {e}")
-
-    return input_path
+    if IS_VERCEL or not FFMPEG_PATH:
+        return input_path # Skip cleaning on Vercel to prevent crashes
+    # ... rest of your code
 
 
 # ================================================================
