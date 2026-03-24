@@ -83,7 +83,7 @@ else:
 # Har audio yahan save hogi taake hum sun sakein kya aa raha hai
 # Folder: debug_audio/ (backend.py ke saath wali directory mein)
 # ================================================================
-DEBUG_DIR = "/tmp/debug_audio"
+DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_audio")
 os.makedirs(DEBUG_DIR, exist_ok=True)
 print(f"📁 Debug audio folder: {DEBUG_DIR}")
 
@@ -108,7 +108,7 @@ def preprocess_audio(input_path: str) -> str:
         FFMPEG_PATH, "-y",
         "-i", input_path,
         "-af",
-        "highpass=f=80,lowpass=f=8000,loudnorm=I=-16:TP=-1.5:LRA=11",
+        "highpass=f=100,lowpass=f=7500,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11",
         "-ar", "16000",
         "-ac", "1",
         "-c:a", "pcm_s16le",
@@ -529,7 +529,7 @@ async def debug_clear():
 async def health():
     return {
         "status":        "online ✅",
-        "version":       "v3.1 Fixed",
+        "version":       "v3.2 WebSpeech+OpenRouter",
         "ffmpeg":        FFMPEG_PATH or "NOT INSTALLED (install ffmpeg + add to PATH)",
         "llm_tier1":     "google/gemini-2.5-flash     — fast primary",
         "llm_tier2":     "anthropic/claude-opus-4.6   — accurate fallback",
@@ -546,5 +546,7 @@ async def health():
 @app.get("/")
 async def root():
     return {"app": "Mandee AI v3.1", "endpoints": ["/process-audio", "/process-text", "/health"]}
+
+
 
 
