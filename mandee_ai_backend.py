@@ -83,8 +83,14 @@ else:
 # Har audio yahan save hogi taake hum sun sakein kya aa raha hai
 # Folder: debug_audio/ (backend.py ke saath wali directory mein)
 # ================================================================
-DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_audio")
-os.makedirs(DEBUG_DIR, exist_ok=True)
+# Change this part
+IS_VERCEL = "VERCEL" in os.environ
+
+if not IS_VERCEL:
+    DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_audio")
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+else:
+    DEBUG_DIR = "/tmp" # Only /tmp is writable on Vercel
 print(f"📁 Debug audio folder: {DEBUG_DIR}")
 
 
