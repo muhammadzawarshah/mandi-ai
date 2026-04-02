@@ -78,26 +78,47 @@ if FFMPEG_PATH:
 else:
     print("⚠️  FFmpeg not found — audio preprocessing disabled (install ffmpeg and add to PATH)")
 
-# ================================================================
-# DEBUG AUDIO FOLDER
-# Har audio yahan save hogi taake hum sun sakein kya aa raha hai
-# Folder: debug_audio/ (backend.py ke saath wali directory mein)
-# ================================================================
-# Change this part
-IS_VERCEL = "VERCEL" in os.environ
-
-if not IS_VERCEL:
-    DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_audio")
-    os.makedirs(DEBUG_DIR, exist_ok=True)
-else:
-    DEBUG_DIR = "/tmp" # Only /tmp is writable on Vercel
-print(f"📁 Debug audio folder: {DEBUG_DIR}")
-
 
 def preprocess_audio(input_path: str) -> str:
-    if IS_VERCEL or not FFMPEG_PATH:
-        return input_path # Skip cleaning on Vercel to prevent crashes
-    # ... rest of your code
+    """
+    FFmpeg se mandi audio clean karo:
+      - highpass=f=80   → pankhe/fan ki bass remove
+      - lowpass=f=8000  → high freq hiss remove
+      - loudnorm        → volume normalize
+      - 16kHz mono WAV  → Whisper ka optimal format
+
+    Agar FFmpeg nahi mila → original file return karo (no crash)
+    """
+    if not FFMPEG_PATH:
+        return input_path  # FFmpeg nahi — silently skip
+
+    base   = os.path.splitext(input_path)[0]
+    out    = base + "_clean.wav"
+
+    cmd = [
+        FFMPEG_PATH, "-y",
+        "-i", input_path,
+        "-af",
+        "highpass=f=100,lowpass=f=7500,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11",
+        "-ar", "16000",
+        "-ac", "1",
+        "-c:a", "pcm_s16le",
+        out,
+        "-loglevel", "error"
+    ]
+
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=10)
+        if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 500:
+            print(f"✅ FFmpeg cleaned: {os.path.getsize(out)//1024}KB")
+            return out
+        print(f"⚠️  FFmpeg failed rc={r.returncode}")
+    except subprocess.TimeoutExpired:
+        print("⚠️  FFmpeg timeout — using original")
+    except Exception as e:
+        print(f"⚠️  FFmpeg error: {e}")
+
+    return input_path
 
 
 # ================================================================
@@ -349,23 +370,10 @@ async def process_audio(file: UploadFile = File(...)):
         if file_size < 500:
             return {"status": "error", "message": "Audio too small — kuch bola nahi"}
 
-        # ── DEBUG: raw audio save karo ──────────────────────────
-        debug_raw = os.path.join(DEBUG_DIR, f"{ts}_1_RAW{ext}")
-        with open(debug_raw, "wb") as f:
-            f.write(audio_bytes)
-        print(f"💾 Saved raw:   {debug_raw}  ({file_size//1024}KB)")
-        # ────────────────────────────────────────────────────────
-
         # 2. FFmpeg clean
         preprocessed = preprocess_audio(raw_path)
         if preprocessed != raw_path:
             clean_path = preprocessed
-            # ── DEBUG: cleaned audio bhi save karo ──────────────
-            debug_clean = os.path.join(DEBUG_DIR, f"{ts}_2_CLEAN.wav")
-            import shutil as _sh
-            _sh.copy2(preprocessed, debug_clean)
-            print(f"💾 Saved clean: {debug_clean}")
-            # ────────────────────────────────────────────────────
 
         # 3. Whisper
         with open(preprocessed, "rb") as af:
@@ -390,31 +398,12 @@ async def process_audio(file: UploadFile = File(...)):
         # 4. LLM cascade
         llm_result = process_text_with_llm(urdu_raw)
 
-        # ── DEBUG: transcript + result log file ─────────────────
-        log_path = os.path.join(DEBUG_DIR, f"{ts}_3_LOG.txt")
-        with open(log_path, "w", encoding="utf-8") as lf:
-            lf.write(f"=== MANDEE AI DEBUG LOG ===\n")
-            lf.write(f"Time       : {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            lf.write(f"Audio size : {file_size} bytes\n")
-            lf.write(f"FFmpeg     : {'ON' if FFMPEG_PATH else 'OFF'}\n")
-            lf.write(f"\n--- WHISPER OUTPUT (RAW) ---\n{urdu_raw}\n")
-            lf.write(f"\n--- PHONETIC CLEANED ---\n{llm_result['phonetic_cleaned']}\n")
-            lf.write(f"\n--- FINAL LLM OUTPUT ---\n{llm_result['corrected_text']}\n")
-            lf.write(f"\n--- MODEL USED ---\n{llm_result['model_used']}\n")
-            lf.write(f"\nLatency: {time.time() - start_time:.2f}s\n")
-        print(f"💾 Saved log:   {log_path}")
-        print(f"📝 Whisper said: '{urdu_raw}'")
-        print(f"✅ Final output: '{llm_result['corrected_text']}'")
-        # ────────────────────────────────────────────────────────
-
         return {
             "status":           "success",
             "processed_text":   llm_result["corrected_text"],
             "original_whisper": urdu_raw,
-            "phonetic_cleaned": llm_result["phonetic_cleaned"],
             "model_used":       llm_result["model_used"],
             "ffmpeg_active":    FFMPEG_PATH is not None,
-            "debug_log":        log_path,
             "latency":          f"{time.time() - start_time:.2f}s"
         }
 
@@ -443,80 +432,21 @@ async def process_text(data: dict):
     }
 
 
-@app.get("/debug")
-async def debug_list():
-    """
-    debug_audio folder mein saved files aur logs dikhao.
-    Browser mein kholo: http://localhost:8000/debug
-    """
-    if not os.path.exists(DEBUG_DIR):
-        return {"debug_dir": DEBUG_DIR, "sessions": []}
-
-    # Saari log files padhte hain
-    sessions = {}
-    for fname in sorted(os.listdir(DEBUG_DIR)):
-        ts_part = fname.split("_")[0]
-        if ts_part not in sessions:
-            sessions[ts_part] = {"files": [], "log": None}
-        fpath = os.path.join(DEBUG_DIR, fname)
-        sessions[ts_part]["files"].append(fname)
-        if fname.endswith("_LOG.txt"):
-            try:
-                with open(fpath, encoding="utf-8") as f:
-                    sessions[ts_part]["log"] = f.read()
-            except Exception:
-                pass
-
-    result = []
-    for ts_key, data in sorted(sessions.items(), reverse=True)[:20]:  # last 20
-        result.append({
-            "session_id": ts_key,
-            "files": data["files"],
-            "log": data["log"]
-        })
-
-    return {
-        "debug_dir": DEBUG_DIR,
-        "total_sessions": len(sessions),
-        "last_20_sessions": result
-    }
-
-
-@app.delete("/debug/clear")
-async def debug_clear():
-    """debug_audio folder khali karo"""
-    count = 0
-    for fname in os.listdir(DEBUG_DIR):
-        try:
-            os.remove(os.path.join(DEBUG_DIR, fname))
-            count += 1
-        except Exception:
-            pass
-    return {"deleted": count, "message": f"{count} files deleted from {DEBUG_DIR}"}
-
 
 @app.get("/health")
 async def health():
     return {
-        "status":        "online ✅",
-        "version":       "v3.2 WebSpeech+OpenRouter",
-        "ffmpeg":        FFMPEG_PATH or "NOT INSTALLED (install ffmpeg + add to PATH)",
-        "llm_tier1":     "google/gemini-2.5-flash     — fast primary",
-        "llm_tier2":     "anthropic/claude-opus-4.6   — accurate fallback",
-        "llm_tier3":     "google/gemini-3.1-pro-preview — last resort",
-        "fixes_v3.1": [
-            "FFmpeg Windows auto-detect fixed",
-            "Gemini JSON parse fixed (no response_format)",
-            "Roman Urdu → Urdu script explicit in prompt",
-            "Faster: Flash first, Opus fallback",
-        ]
+        "status":    "online ✅",
+        "ffmpeg":    FFMPEG_PATH or "NOT INSTALLED",
+        "llm_tier1": "google/gemini-2.5-flash",
+        "llm_tier2": "anthropic/claude-opus-4.6",
+        "llm_tier3": "google/gemini-3.1-pro-preview",
     }
 
 
 @app.get("/")
 async def root():
     return {"app": "Mandee AI v3.1", "endpoints": ["/process-audio", "/process-text", "/health"]}
-
 
 
 
